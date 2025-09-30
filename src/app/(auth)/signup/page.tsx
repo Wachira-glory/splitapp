@@ -36,17 +36,22 @@ export default function SignupPage() {
     try {
       await signup(email, password,fullName)
       router.push('/check-email')
-    } catch (err: any) {
-      const msg = err.message || 'Signup failed. Please try again.'
-      toast.error(msg) 
+    }catch (err: unknown) {
+  let msg = 'Signup failed. Please try again.'
+  
+  if (err instanceof Error) {
+    msg = err.message
+  }
 
-      if (msg === 'Email already exists. Please log in.') {
-  setTimeout(() => {
-    router.push('/login')
-  }, 1500)
+  toast.error(msg)
+
+  if (msg === 'Email already exists. Please log in.') {
+    setTimeout(() => {
+      router.push('/login')
+    }, 1500)
+  }
 }
-
-    } finally {
+ finally {
       setIsLoading(false)
     }
   }

@@ -4,9 +4,8 @@ import type React from "react"
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import Image from "next/image"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Input } from "@/components/ui/input" 
 import { useAuth } from "@/lib/context/AuthContext"
 import { FcGoogle } from "react-icons/fc"
 
@@ -27,9 +26,13 @@ export default function LoginPage() {
     try {
       await login(email, password)
       router.push("/dashboard")
-    } catch (err:any) {
-      setError(err.message || 'Login failed')
-    } finally {
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+        setError("Login failed")
+      }
+    }finally {
       setIsLoading(false)
     }
   }

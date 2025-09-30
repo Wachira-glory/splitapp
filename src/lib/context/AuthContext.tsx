@@ -169,10 +169,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         toast.error(error.message || "Google sign-in failed")
         throw new Error(error.message)
       }
-    } catch (error: any) {
-      toast.error(error.message || "Google sign-in failed")
-      throw error
-    }
+    } catch (err: unknown) {
+  if (err instanceof Error) {
+    console.error("Auth error:", err.message)
+  } else {
+    console.error("Auth error:", err)
+  }
+}
+
   }
 
   const logout = async () => {
@@ -180,10 +184,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await supabase.auth.signOut()
       setUser(null)
       toast.success("Logged out successfully")
-    } catch (error: any) {
-      toast.error("Error logging out")
-      console.error('Logout error:', error)
-    }
+    } catch (error: unknown) {
+  toast.error("Error logging out")
+  if (error instanceof Error) {
+    console.error("Logout error:", error.message)
+  } else {
+    console.error("Logout error:", error)
+  }
+}
+
   }
 
   return (
