@@ -9,9 +9,8 @@ import { ThemeProvider } from "@/lib/context/ThemeContext"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Mulaflow - Payment Management Platform",
+  title: "SplitBillApp",
   description: "Monitor your incoming transactions and stay on top of your cash flow.",
-    generator: 'v0.dev'
 }
 
 export default function RootLayout({
