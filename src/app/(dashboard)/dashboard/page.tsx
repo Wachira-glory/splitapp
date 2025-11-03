@@ -3,36 +3,54 @@
 import React, { useState, useEffect } from 'react';
 import { DollarSign, Plus, X, CheckCircle, Clock, Share2, Send, Users, AlertCircle } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
-
-// Initialize Supabase Client
+// Your Supabase (for bills metadata)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://bufdseweassfymorwyyc.supabase.co';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ1ZmRzZXdlYXNzZnltb3J3eXljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg3ODMyMjQsImV4cCI6MjA3NDM1OTIyNH0.SLSO8T3d1THeEv710c25Mq3TH_bgEc2lSxb75s9lqx0';
-
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Calculate split with whole numbers - ensures total adds up correctly
-const calculateSplit = (totalAmount, numberOfPeople) => {
+// Unda Supabase (for payments)
+const undaSupabaseUrl = process.env.NEXT_PUBLIC_UNDA_SUPABASE_URL || 'https://zpmyjmzvgmohyqhprqmr.supabase.co';
+const undaAnonKey = process.env.NEXT_PUBLIC_UNDA_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpwbXlqbXp2Z21vaHlxaHBycW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcxNDE3MjAsImV4cCI6MjA2MjcxNzcyMH0.cn40M6H5wq2lthw8slqBwyEk7KJNWbvVFhGbUKhcdeg';
+const undaSupabase = createClient(undaSupabaseUrl, undaAnonKey);
+
+
+
+const UNDA_API_USERNAME = process.env.NEXT_PUBLIC_UNDA_API_USERNAME || '18.ac3356009b7c486e9058a383d15697ed@unda.co';
+const UNDA_API_PASSWORD = process.env.NEXT_PUBLIC_UNDA_API_PASSWORD || 'b46ceded2e1c45fe9c5012b96172a833';
+const UNDA_MPESA_CHARGE_URL = `${undaSupabaseUrl}/functions/v1/mpesa-charge`;
+const PROXY_URL = "https://bufdseweassfymorwyyc.supabase.co/functions/v1/proxy-charge";
+const UNDA_API_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+// Calculate split with whole numbers
+const calculateSplit = (totalAmount: number, numberOfPeople: number): number[] => {
+  // Ensure minimum amount is 1 KES per person
+  if (totalAmount < numberOfPeople) {
+    // If amount is less than number of people, give 1 to first N people
+    const amounts = new Array(numberOfPeople).fill(0);
+    for (let i = 0; i < totalAmount; i++) {
+      amounts[i] = 1;
+    }
+    return amounts;
+  }
+  
   const baseAmount = Math.floor(totalAmount / numberOfPeople);
   const remainder = totalAmount - (baseAmount * numberOfPeople);
-  
   const amounts = new Array(numberOfPeople).fill(baseAmount);
   
-  // Distribute remainder to first N people
+  // Distribute remainder starting from first person
   for (let i = 0; i < remainder; i++) {
     amounts[i] += 1;
   }
-  
   return amounts;
 };
 
-// Validate phone number format
-const validatePhoneNumber = (phone) => {
-  // Accepts: 2547XXXXXXXX, 25411XXXXXXX, 07XXXXXXXX, 011XXXXXXX
+// Validate phone number
+const validatePhoneNumber = (phone: string): boolean => {
   return /^(2547\d{8}|25411\d{7}|07\d{8}|011\d{7})$/.test(phone);
 };
 
-// Normalize phone number to 2547 format
-const normalizePhoneNumber = (phone) => {
+// Normalize phone number to 254 format
+const normalizePhoneNumber = (phone: string): string => {
   if (phone.startsWith('07')) {
     return '254' + phone.substring(1);
   } else if (phone.startsWith('011')) {
@@ -41,9 +59,21 @@ const normalizePhoneNumber = (phone) => {
   return phone;
 };
 
+// Map Unda status to SplitBill status
+const mapUndaStatus = (undaStatus: string): string => {
+  const statusMap: { [key: string]: string } = {
+    'SUCCESS': 'paid',
+    'PENDING': 'pending',
+    'FAILED': 'cancelled',
+    'PROCESSING': 'pending',
+    'INITIATED': 'pending'
+  };
+  return statusMap[undaStatus?.toUpperCase()] || 'pending';
+};
+
 const App = () => {
   const [activeTab, setActiveTab] = useState('landing');
-  const [bills, setBills] = useState([]);
+  const [bills, setBills] = useState<any[]>([]);
 
   useEffect(() => {
     if (activeTab === 'payments') {
@@ -52,14 +82,41 @@ const App = () => {
   }, [activeTab]);
 
   const fetchBills = async () => {
-    const { data, error } = await supabase
-      .from('bills')
-      .select('*')
-      .order('created_at', { ascending: false });
+    try {
+      const { data: billsData, error: billsError } = await supabase
+        .from('bills')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-    if (!error && data) {
-      setBills(data);
-    } else if (error) {
+      if (billsError) throw billsError;
+
+      const billsWithPayments = await Promise.all(
+        (billsData || []).map(async (bill) => {
+          const { data: paymentsData, error: paymentsError } = await undaSupabase
+            .from('payments')
+            .select('*')
+            .eq('reference', bill.id);
+
+          if (paymentsError) {
+            console.error('Error fetching payments for bill:', bill.id, paymentsError);
+            return { ...bill, participants: [] };
+          }
+
+          const participants = (paymentsData || []).map((payment: any) => ({
+            name: payment.data?.name || payment.reference?.split('-')[1] || 'Customer',
+            phone: payment.idata?.customer_no || payment.data?.phone || '',
+            amount: Number(payment.amount),
+            status: mapUndaStatus(payment.status),
+            unda_txn_id: payment.txn_id,
+            unda_public_id: payment.public_id
+          }));
+
+          return { ...bill, participants };
+        })
+      );
+
+      setBills(billsWithPayments);
+    } catch (error) {
       console.error('Error fetching bills:', error);
     }
   };
@@ -74,7 +131,6 @@ const App = () => {
           <h1 className="text-5xl font-bold text-white mb-4">SplitBill</h1>
           <p className="text-xl text-purple-100">Split bills effortlessly with friends and family</p>
         </div>
-
         <div className="space-y-4">
           <button
             onClick={() => setActiveTab('create')}
@@ -99,32 +155,31 @@ const App = () => {
     const [paybill, setPaybill] = useState('');
     const [reference, setReference] = useState('');
     const [numberOfPeople, setNumberOfPeople] = useState('');
-    const [phoneNumbers, setPhoneNumbers] = useState([{ id: 1, number: '', name: '' }]);
+    const [phoneNumbers, setPhoneNumbers] = useState<Array<{ id: number; number: string; name: string }>>([{ id: 1, number: '', name: '' }]);
     const [showConfirmation, setShowConfirmation] = useState(false);
-    const [generatedBill, setGeneratedBill] = useState(null);
+    const [generatedBill, setGeneratedBill] = useState<any>(null);
     const [sendMethod, setSendMethod] = useState('stk');
     const [loading, setLoading] = useState(false);
-    const [errors, setErrors] = useState({});
+    const [errors, setErrors] = useState<any>({});
 
     const addPhoneNumber = () => {
       setPhoneNumbers([...phoneNumbers, { id: Date.now(), number: '', name: '' }]);
     };
 
-    const removePhoneNumber = (id) => {
+    const removePhoneNumber = (id: number) => {
       if (phoneNumbers.length > 1) {
         setPhoneNumbers(phoneNumbers.filter(p => p.id !== id));
       }
     };
 
-    const updatePhoneNumber = (id, field, value) => {
+    const updatePhoneNumber = (id: number, field: string, value: string) => {
       setPhoneNumbers(phoneNumbers.map(p => 
         p.id === id ? { ...p, [field]: value } : p
       ));
     };
 
     const handleCreatePayment = () => {
-      const newErrors = {};
-
+      const newErrors: any = {};
       if (!billName) newErrors.billName = 'Bill name is required';
       if (!totalAmount) newErrors.totalAmount = 'Total amount is required';
       if (!paybill) newErrors.paybill = 'Paybill number is required';
@@ -136,7 +191,6 @@ const App = () => {
         if (validPhones.length === 0) {
           newErrors.phones = 'Add at least one person with phone number for STK Push';
         } else {
-          // Validate all phone numbers
           validPhones.forEach((p, idx) => {
             if (!validatePhoneNumber(p.number)) {
               newErrors[`phone_${idx}`] = `Invalid phone format: ${p.number}`;
@@ -154,34 +208,33 @@ const App = () => {
 
       const numPeople = parseInt(numberOfPeople);
       const total = parseFloat(totalAmount);
-      
-      // Calculate split with whole numbers
       const splitAmounts = calculateSplit(total, numPeople);
 
       const participants = validPhones.map((p, idx) => ({
         name: p.name,
         phone: normalizePhoneNumber(p.number),
-        amount: splitAmounts[idx] || splitAmounts[0],
+        amount: splitAmounts[idx] ?? 0,
         status: 'pending'
       }));
 
-      // If using link method, create placeholder participants
       if (sendMethod === 'link' && participants.length === 0) {
         for (let i = 0; i < numPeople; i++) {
           participants.push({
             name: `Person ${i + 1}`,
             phone: 'Via Link',
-            amount: splitAmounts[i],
+            amount: splitAmounts[i] ?? 0,
             status: 'pending'
           });
         }
       }
 
+      const billId = 'bill-' + Date.now();
       const newBill = {
+        id: billId,
         bill_name: billName,
         total_amount: total,
         paybill: paybill,
-        reference: reference || 'bill-' + Date.now(),
+        reference: reference || billId,
         number_of_people: numPeople,
         share_link: `${window.location.origin}/pay/${Date.now().toString(36)}`,
         participants: participants,
@@ -192,119 +245,214 @@ const App = () => {
       setShowConfirmation(true);
     };
 
-    const sendQuikkSTKPush = async (phone, amount, paybill, reference) => {
-      try {
-        const requestBody = {
-          amount: amount,
-          phone: phone,
-          paybill: paybill,
-          reference: reference
-        };
 
-        const response = await fetch(`${supabaseUrl}/functions/v1/mpesa-charge`, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${supabaseAnonKey}`
-          },
-          body: JSON.stringify(requestBody)
-        });
 
-        const result = await response.json();
-        
-        if (response.ok && result.success) {
-          return { success: true, data: result };
-        } else {
-          return { success: false, error: result.error || result.message || 'Unknown error' };
-        }
-      } catch (error) {
-        console.error('Quikk API Error:', error);
-        return { success: false, error: error.message };
+    
+// Add this function near the top of your component, after the constants
+const getUndaJWT = async (): Promise<string | null> => {
+  try {
+    const response = await fetch(
+      `${undaSupabaseUrl}/auth/v1/token?grant_type=password`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": undaAnonKey,
+        },
+        body: JSON.stringify({
+          email: UNDA_API_USERNAME,
+          password: UNDA_API_PASSWORD,
+        }),
       }
+    );
+
+    if (!response.ok) {
+      console.error("Failed to get JWT:", await response.text());
+      return null;
+    }
+
+    const data = await response.json();
+    console.log("✅ Fresh JWT obtained, expires at:", new Date(data.expires_at * 1000));
+    return data.access_token;
+  } catch (error) {
+    console.error("❌ Error getting JWT:", error);
+    return null;
+  }
+};
+
+// Update your sendUndaSTKPush function
+const sendUndaSTKPush = async (
+  phone: string,
+  amount: number,
+  reference: string,
+  uid: number,
+  name: string
+) => {
+  try {
+    // ✅ Get fresh JWT token
+    const jwtToken = await getUndaJWT();
+    if (!jwtToken) {
+      return { success: false, error: "Failed to authenticate with Unda" };
+    }
+
+    const payload = {
+      customer_no: phone,
+      amount,
+      reference,
     };
 
-    const handleConfirmPayment = async () => {
-      setLoading(true);
+    console.log("📞 Sending STK to UNDA:", payload);
 
-      try {
-        // Save to database
-        const { data, error } = await supabase
-          .from('bills')
-          .insert(generatedBill)
-          .select()
-          .single();
-
-        if (error) {
-          console.error('Database error:', error);
-          alert('Failed to save bill. Please try again.');
-          setLoading(false);
-          return;
-        }
-
-        if (sendMethod === 'stk') {
-          // Send STK Push to all participants
-          let successCount = 0;
-          let failedList = [];
-          let detailedResults = [];
-
-          for (const participant of generatedBill.participants) {
-            console.log(`📞 Sending to ${participant.name} (${participant.phone})...`);
-            
-            const result = await sendQuikkSTKPush(
-              participant.phone,
-              participant.amount,
-              generatedBill.paybill,
-              generatedBill.reference
-            );
-
-            console.log(`📊 Result for ${participant.name}:`, result);
-
-            if (result.success) {
-              successCount++;
-              detailedResults.push(`✅ ${participant.name}: Success`);
-            } else {
-              failedList.push(`${participant.name}: ${result.error}`);
-              detailedResults.push(`❌ ${participant.name}: ${result.error}`);
-            }
-          }
-
-          // Show detailed results
-          console.log('📋 All Results:', detailedResults);
-
-          if (successCount > 0) {
-            alert(`✅ STK Push Sent Successfully!\n\n${successCount} out of ${generatedBill.participants.length} payment requests sent.\n\nDetails:\n${detailedResults.join('\n')}\n\nParticipants will receive M-Pesa prompts on their phones.\n\nPaybill: ${generatedBill.paybill}\nReference: ${generatedBill.reference}`);
-          }
-
-          if (failedList.length > 0) {
-            alert(`⚠️ Some requests failed:\n\n${failedList.join('\n')}`);
-          }
-        } else {
-          // Copy link to clipboard
-          navigator.clipboard.writeText(generatedBill.share_link);
-          alert(`📱 Payment Link Created!\n\nLink copied to clipboard:\n${generatedBill.share_link}\n\nShare via WhatsApp, Telegram, or any messaging app!`);
-        }
-
-        // Reset form
-        setBillName('');
-        setTotalAmount('');
-        setPaybill('');
-        setReference('');
-        setNumberOfPeople('');
-        setPhoneNumbers([{ id: 1, number: '', name: '' }]);
-        setShowConfirmation(false);
-        setGeneratedBill(null);
-        setActiveTab('payments');
-      } catch (error) {
-        console.error('Error:', error);
-        alert('Something went wrong. Please try again.');
-      } finally {
-        setLoading(false);
+    const response = await fetch(
+      `${undaSupabaseUrl}/functions/v1/api-channels-mpesa-charge-req?api_key=3f8fd65caca749218e4d2fe2f865b7ab`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${jwtToken}`, // ✅ Use fresh JWT
+          "apikey": undaAnonKey, // ✅ Anon key
+          "x-platform-uid": uid.toString(),
+        },
+        body: JSON.stringify(payload),
       }
-    };
+    );
+
+    const responseText = await response.text();
+    console.log("📊 Raw UNDA response:", responseText);
+
+    let result;
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      return { success: false, error: "Invalid JSON response from UNDA" };
+    }
+
+    console.log("✅ Parsed UNDA response:", result);
+
+    if (response.ok && result?.data?.id) {
+      return {
+        success: true,
+        data: {
+          public_id: result.data.id,
+          status: result.data.status ?? "processing",
+          uid,
+          amount,
+          reference,
+          name,
+        },
+      };
+    }
+
+    return { success: false, error: result?.message || result?.error || "Payment request failed" };
+  } catch (error: any) {
+    console.error("❌ UNDA API Error:", error);
+    return { success: false, error: error.message || "Network error occurred" };
+  }
+};
+
+
+ const handleConfirmPayment = async () => {
+  if (!generatedBill) return;
+
+  const jwtToken = await getUndaJWT();
+  if (!jwtToken) {
+    alert("Failed to authenticate with Unda");
+    return;
+  }
+
+  setLoading(true);
+
+  try {
+    for (const participant of generatedBill.participants) {
+      const result = await sendUndaSTKPush(
+        participant.phone,
+        participant.amount,
+        generatedBill.reference.toString(),
+        participant.uid ?? Date.now(),
+        participant.name
+      );
+
+      if (result?.data) {
+        console.log("✅ STK Push successful:", result.data);
+
+        // ✅ Check if payment was auto-created by Unda API
+        const checkResponse = await fetch(
+          `${undaSupabaseUrl}/rest/v1/payments?public_id=eq.${result.data.public_id}&select=*`,
+          {
+            method: "GET",
+            headers: {
+              "Authorization": `Bearer ${jwtToken}`,
+              "apikey": undaAnonKey,
+            },
+          }
+        );
+
+        if (checkResponse.ok) {
+          const existingPayments = await checkResponse.json();
+          console.log("Payment already exists?", existingPayments);
+
+          if (existingPayments && existingPayments.length > 0) {
+            console.log("✅ Payment auto-created by Unda, skipping manual insert");
+            continue; // Skip to next participant
+          }
+        }
+
+        // ✅ Only insert if payment doesn't exist
+        console.log("Payment not found, attempting manual insert...");
+        const insertResponse = await fetch(
+          `${undaSupabaseUrl}/rest/v1/payments`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${jwtToken}`,
+              "apikey": undaAnonKey,
+              "Prefer": "return=representation",
+            },
+            body: JSON.stringify({
+              public_id: result.data.public_id,
+              p_id: 18, // Platform ID
+              channel_id: 1, // M-Pesa channel ID
+              uid: result.data.uid || participant.uid?.toString() || null,
+              amount: participant.amount,
+              reference: generatedBill.reference.toString(),
+              status: result.data.status ?? "processing",
+              category: "charge",
+              data: {
+                phone: participant.phone,
+                name: participant.name,
+              },
+            }),
+          }
+        );
+
+        if (!insertResponse.ok) {
+          const errorText = await insertResponse.text();
+          console.error("❌ Error inserting payment:", errorText);
+        } else {
+          const insertedData = await insertResponse.json();
+          console.log("✅ Payment manually inserted:", insertedData);
+        }
+      }
+    }
+
+    alert("Payment requests sent successfully!");
+    setShowConfirmation(false);
+    setGeneratedBill(null);
+    fetchBills();
+  } catch (error) {
+    console.error("❌ Error in handleConfirmPayment:", error);
+    alert("Failed to send payment requests");
+  } finally {
+    setLoading(false);
+  }
+};
+
+
 
     const handleShareWhatsApp = () => {
       const participantDetails = generatedBill.participants
-        .map(p => `${p.name}: KES ${p.amount}`)
+        .map((p: any) => `${p.name}: KES ${p.amount}`)
         .join('\n');
 
       const message = `💸 *${generatedBill.bill_name}*\n\n📊 Total: KES ${generatedBill.total_amount}\n💰 Split Details:\n${participantDetails}\n\n🏦 Paybill: ${generatedBill.paybill}\n📝 Reference: ${generatedBill.reference}\n\n🔗 Pay here: ${generatedBill.share_link}`;
@@ -359,7 +507,7 @@ const App = () => {
                 >
                   <Send className={`mx-auto mb-2 ${sendMethod === 'stk' ? 'text-purple-600' : 'text-gray-400'}`} size={24} />
                   <p className="font-medium text-sm">STK Push</p>
-                  <p className="text-xs text-gray-500 mt-1">Send M-Pesa prompt</p>
+                  <p className="text-xs text-gray-500 mt-1">Direct to phones</p>
                 </button>
 
                 <button
@@ -384,7 +532,7 @@ const App = () => {
                   STK Push Recipients
                 </h3>
                 <div className="space-y-2">
-                  {generatedBill.participants.map((p, idx) => (
+                  {generatedBill.participants.map((p: any, idx: number) => (
                     <div key={idx} className="flex items-center justify-between bg-white p-3 rounded-lg border border-gray-200">
                       <div>
                         <p className="font-medium text-gray-800">{p.name}</p>
@@ -397,7 +545,7 @@ const App = () => {
                 <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                   <p className="text-sm text-blue-800">
                     <AlertCircle size={16} className="inline mr-1" />
-                    Total: KES {generatedBill.participants.reduce((sum, p) => sum + p.amount, 0)} (equals bill amount)
+                    Recipients will receive payment prompts on their phones
                   </p>
                 </div>
               </div>
@@ -439,12 +587,12 @@ const App = () => {
                 Cancel
               </button>
               <button
-                onClick={handleConfirmPayment}
-                className="flex-1 py-3 px-4 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-colors font-medium disabled:opacity-50"
-                disabled={loading}
-              >
-                {loading ? 'Processing...' : (sendMethod === 'stk' ? 'Send STK Push' : 'Copy & Share Link')}
-              </button>
+              onClick={handleConfirmPayment}
+              className="w-full bg-purple-600 text-white py-3 rounded-lg font-medium hover:bg-purple-700 transition-colors flex items-center justify-center gap-2"
+            >
+              <Send size={18} />
+              Send STK Push
+            </button>
             </div>
           </div>
         </div>
@@ -620,11 +768,11 @@ const App = () => {
   };
 
   const PaymentsHistory = () => {
-    const getPaidCount = (participants) => {
+    const getPaidCount = (participants: any[]) => {
       return participants.filter(p => p.status === 'paid').length;
     };
 
-    const getStatus = (participants) => {
+    const getStatus = (participants: any[]) => {
       const paidCount = getPaidCount(participants);
       if (paidCount === participants.length) return 'settled';
       if (paidCount > 0) return 'partial';
@@ -643,13 +791,13 @@ const App = () => {
 
           <div className="mb-6">
             <h2 className="text-3xl font-bold text-gray-800 mb-2">Payment History</h2>
-            <p className="text-gray-600">View all your split bills</p>
+            <p className="text-gray-600">View all your split bills (powered by Unda)</p>
           </div>
 
           <div className="space-y-4">
             {bills.map((bill) => {
-              const status = getStatus(bill.participants);
-              const paidCount = getPaidCount(bill.participants);
+              const status = getStatus(bill.participants || []);
+              const paidCount = getPaidCount(bill.participants || []);
 
               return (
                 <div key={bill.id} className="bg-white rounded-2xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow">
@@ -672,7 +820,7 @@ const App = () => {
                         )}
                         {status === 'partial' && (
                           <span className="inline-block mt-2 px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
-                            {paidCount}/{bill.participants.length} Paid
+                            {paidCount}/{bill.participants?.length || 0} Paid
                           </span>
                         )}
                         {status === 'pending' && (
@@ -683,38 +831,49 @@ const App = () => {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      {bill.participants.map((participant, idx) => (
-                        <div
-                          key={idx}
-                          className="flex items-center justify-between p-3 bg-gray-50 rounded-xl"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-purple-600 flex items-center justify-center text-white font-semibold">
-                              {participant.name.charAt(0)}
+                    {bill.participants && bill.participants.length > 0 && (
+                      <div className="space-y-2">
+                        {bill.participants.map((participant: any, idx: number) => (
+                          <div
+                            key={idx}
+                            className="flex items-center justify-between p-3 bg-gray-50 rounded-xl"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-full bg-purple-600 flex items-center justify-center text-white font-semibold">
+                                {participant.name.charAt(0)}
+                              </div>
+                              <div>
+                                <p className="font-medium text-gray-800">{participant.name}</p>
+                                <p className="text-sm text-gray-500">{participant.phone}</p>
+                                {participant.unda_txn_id && (
+                                  <p className="text-xs text-gray-400">TXN: {participant.unda_txn_id}</p>
+                                )}
+                              </div>
                             </div>
-                            <div>
-                              <p className="font-medium text-gray-800">{participant.name}</p>
-                              <p className="text-sm text-gray-500">{participant.phone}</p>
+                            <div className="text-right">
+                              <p className="font-bold text-gray-800">KES {participant.amount}</p>
+                              {participant.status === 'paid' ? (
+                                <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
+                                  <CheckCircle size={14} />
+                                  Paid
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-xs text-orange-600 font-medium">
+                                  <Clock size={14} />
+                                  Pending
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <div className="text-right">
-                            <p className="font-bold text-gray-800">KES {participant.amount}</p>
-                            {participant.status === 'paid' ? (
-                              <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
-                                <CheckCircle size={14} />
-                                Paid
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-xs text-orange-600 font-medium">
-                                <Clock size={14} />
-                                Pending
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {(!bill.participants || bill.participants.length === 0) && (
+                      <div className="text-center py-4 text-gray-500 text-sm">
+                        No payments recorded yet
+                      </div>
+                    )}
                   </div>
                 </div>
               );

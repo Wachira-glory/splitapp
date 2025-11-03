@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "strict": false
+  },
+  "imports": {
+    "serve": "https://deno.land/std/http/server.ts"
+  },
+  "tasks": {},
+  "fmt": {
+    "useTabs": false,
+    "lineWidth": 100,
+    "indentWidth": 2,
+    "singleQuote": true,
+    "proseWrap": "preserve"
+  }
+}
