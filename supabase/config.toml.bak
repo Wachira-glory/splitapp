@@ -1,0 +1,9 @@
+[project]
+ref = "bufdseweassfymorwyyc"
+
+[functions.unda_callback]
+enabled = true
+verify_jwt = true
+import_map = "./functions/unda-callback/deno.json"
+entrypoint = "./functions/unda-callback/index.ts"
+# static_files = [ "./functions/unda-callback/*.html" ]
