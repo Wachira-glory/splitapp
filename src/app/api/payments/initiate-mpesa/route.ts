@@ -36,11 +36,11 @@ export async function POST(request: NextRequest) {
 
 
     console.log('Environment variables:', {
-      undaUrl: undaUrl ? ✓ ${undaUrl.substring(0, 30)}... : '✗ Missing',
-      undaAnonKey: undaAnonKey ? ✓ ${undaAnonKey.substring(0, 20)}... : '✗ Missing',
-      undaEmail: undaEmail ? ✓ ${undaEmail} : '✗ Missing',
-      undaPassword: undaPassword ? '✓ Set' : '✗ Missing',
-    });
+  undaUrl: undaUrl ? `✓ ${undaUrl.substring(0, 30)}...` : '✗ Missing',
+  undaAnonKey: undaAnonKey ? `✓ ${undaAnonKey.substring(0, 20)}...` : '✗ Missing',
+  undaEmail: undaEmail ? `✓ ${undaEmail}` : '✗ Missing',
+  undaPassword: undaPassword ? '✓ Set' : '✗ Missing',
+});
 
     const missingVars = [];
     if (!undaUrl) missingVars.push('NEXT_PUBLIC_UNDA_SUPABASE_URL');
@@ -54,24 +54,30 @@ export async function POST(request: NextRequest) {
         { 
           success: false, 
           error: 'Server configuration error',
-          details: Missing: ${missingVars.join(', ')}
+          details: `Missing: ${missingVars.join(', ')}`
+
         },
         { status: 500 }
       );
     }
 
     console.log('Creating Unda Supabase client...');
-    const unda = createClient(undaUrl, undaAnonKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      }
-    });
+    const unda = createClient(
+  undaUrl as string,
+  undaAnonKey as string,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  }
+);
+
 
     console.log('Authenticating with Unda...');
     const { data: authData, error: authError } = await unda.auth.signInWithPassword({
-      email: undaEmail,
-      password: undaPassword,
+      email: undaEmail as string,
+      password: undaPassword  as string,
     });
 
     if (authError) {
