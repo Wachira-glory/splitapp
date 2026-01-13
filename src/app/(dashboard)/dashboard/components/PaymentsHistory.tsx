@@ -33,32 +33,55 @@ const PaymentsHistory = ({ setActiveView, isVisible }: PaymentsHistoryProps) => 
     const router = useRouter();
 
     const fetchBills = useCallback(async () => {
-      setIsLoading(true);
+  setIsLoading(true);
+  try {
+    // 1. Get the current authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      console.error("User not authenticated");
+      setIsLoading(false);
+      return;
+    }
+
+    // 2. Fetch bills ONLY for this user
+    const { data: billsData, error: billsError } = await supabase
+      .from('bills')
+      .select('*')
+      .eq('user_id', user.id) // 🔥 Security: Only my bills
+      .order('created_at', { ascending: false });
+    
+    if (billsError) throw billsError;
+
+    // 3. Define and map the data (Fixes the 'Cannot find name' error)
+    const billsWithParticipants = (billsData || []).map(bill => {
+      let participants: any[] = [];
+      
+      // If you are storing participants in a separate table, 
+      // you might not need the JSON.parse logic here. 
+      // But if you are using a JSONB column 'participants_info':
       try {
-        const { data: billsData, error: billsError } = await supabase
-          .from('bills')
-          .select('*')
-          .order('created_at', { ascending: false });
-        
-        if (billsError) throw billsError;
-
-        const billsWithParticipants = (billsData || []).map(bill => {
-          let participants: any[] = [];
-          try {
-            participants = bill.participants_info ? JSON.parse(bill.participants_info) : [];
-          } catch (e) {
-            console.error('Error parsing participants_info:', e);
-          }
-          return { ...bill, participants };
-        });
-
-        setBills(billsWithParticipants);
-      } catch (error) {
-        console.error('Error fetching bills:', error);
-      } finally {
-        setIsLoading(false);
+        participants = bill.participants_info 
+          ? (typeof bill.participants_info === 'string' 
+              ? JSON.parse(bill.participants_info) 
+              : bill.participants_info) 
+          : [];
+      } catch (e) {
+        console.error('Error parsing participants_info for bill:', bill.id, e);
       }
-    }, []);
+      
+      return { ...bill, participants };
+    });
+
+    // 4. Update the state with the mapped data
+    setBills(billsWithParticipants);
+
+  } catch (error) {
+    console.error('Error fetching bills history:', error);
+  } finally {
+    setIsLoading(false);
+  }
+}, []);
     
     // Load bills only when this component is visible (isVisible === true)
     useEffect(() => {

@@ -1,18 +1,17 @@
-//create-payment/page.tsx
 "use client"
 
 import React, { useState, useEffect } from 'react';
-import { CheckCircle, Clock, Send, RefreshCw, ArrowLeft, Users, DollarSign } from 'lucide-react';
+import { CheckCircle, Clock, Send, RefreshCw, ArrowLeft, Users } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { useRouter } from 'next/navigation';
 
 // --- CONFIGURATION ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://bufdseweassfymorwyyc.supabase.co';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ1ZmRzZXdlYXNzZnltb3J3eXljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg3ODMyMjQsImV4cCI6MjA3NDM1OTIyNH0.SLSO8T3d1THeEv710c25Mq3TH_bgEc2lSxb75s9lqx0';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'YOUR_KEY';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 const undaSupabaseUrl = process.env.NEXT_PUBLIC_UNDA_SUPABASE_URL || 'https://zpmyjmzvgmohyqhprqmr.supabase.co';
-const undaAnonKey = process.env.NEXT_PUBLIC_UNDA_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6InpwbXlqbXp2Z21vaHlxaHBycW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcxNDE3MjAsImV4cCI6MjA2MjcxNzcyMH0.cn40M6H5wq2lthw8slqBwyEk7KJNWbvVFhGbUKhcdeg';
+const undaAnonKey = process.env.NEXT_PUBLIC_UNDA_SUPABASE_ANON_KEY || 'YOUR_KEY';
 
 const UNDA_API_USERNAME = process.env.NEXT_PUBLIC_UNDA_API_USERNAME || '23.e10862e4f96d41d6b68c5c08d988c9fd@unda.co';
 const UNDA_API_PASSWORD = process.env.NEXT_PUBLIC_UNDA_API_PASSWORD || 'fbca1d9e28b945f984b84560dea34edc';
@@ -48,7 +47,27 @@ const CreatePaymentPage = () => {
     const [sendingStatus, setSendingStatus] = useState<{ [key: string]: 'idle' | 'sending' | 'sent' | 'failed' }>({});
     const [loading, setLoading] = useState(false);
 
-    // --- AUTO POLLER ---
+    // --- LOGIC: SPLIT EQUALLY (WHOLE NUMBERS) ---
+    const splitEqually = () => {
+        if (!totalAmount || !numberOfPeople) return;
+        const total = parseFloat(totalAmount);
+        const count = parseInt(numberOfPeople);
+        const roundedShare = Math.round(total / count);
+        
+        setPhoneNumbers(prev => {
+            let currentRunningSum = 0;
+            return prev.map((p, idx) => {
+                if (idx === prev.length - 1) {
+                    const finalAmount = total - currentRunningSum;
+                    return { ...p, amount: finalAmount.toString() };
+                }
+                currentRunningSum += roundedShare;
+                return { ...p, amount: roundedShare.toString() };
+            });
+        });
+    };
+
+    // --- AUTO POLLER & COMPLETION ---
     const startAutomaticPoll = (undaId: any, phone: string, participant: any) => {
         const poll = setInterval(async () => {
             try {
@@ -62,7 +81,6 @@ const CreatePaymentPage = () => {
                 if (!paymentInfo) return;
 
                 const rawStatus = (paymentInfo.status || "").toLowerCase();
-
                 if (['completed', 'success', 'paid'].includes(rawStatus)) {
                     clearInterval(poll);
                     handleCompletePayment(phone, participant.amount);
@@ -75,7 +93,6 @@ const CreatePaymentPage = () => {
     };
 
     const handleCompletePayment = async (phone: string, amount: number) => {
-        // 1. Settle to Restaurant
         await fetch('/api/settle-to-restaurant', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -87,7 +104,6 @@ const CreatePaymentPage = () => {
             }),
         });
 
-        // 2. Update UI
         setGeneratedBill((prev: any) => ({
             ...prev,
             participants: prev.participants.map((p: any) => 
@@ -95,7 +111,6 @@ const CreatePaymentPage = () => {
             )
         }));
 
-        // 3. Update DB
         await supabase.from('participants').update({ status: 'paid' }).eq('bill_id', generatedBill.id).eq('phone_number', phone);
     };
 
@@ -126,16 +141,42 @@ const CreatePaymentPage = () => {
 
     const handleCreatePayment = async () => {
         const validPhones = phoneNumbers.filter(p => p.number && p.name && p.amount);
-        if (validPhones.length === 0) return;
-        
-        const billId = 'bill-' + Date.now();
+        if (validPhones.length === 0 || !billName || !totalAmount || !paybill) {
+            alert("Please fill in all bill details.");
+            return;
+        }
+
+        const calculatedSum = phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0);
+        if (Math.abs(calculatedSum - parseFloat(totalAmount)) > 0.01) {
+            alert(`Total mismatch: Participants total ${calculatedSum}, but Bill total is ${totalAmount}.`);
+            return;
+        }
+
         setLoading(true);
         try {
-            await supabase.from('bills').insert({ id: billId, bill_name: billName, total_amount: parseFloat(totalAmount), paybill, reference: billId, number_of_people: validPhones.length });
-            await supabase.from('participants').insert(validPhones.map(p => ({ bill_id: billId, name: p.name, phone_number: normalizePhoneNumber(p.number), amount: Number(p.amount), status: 'pending' })));
-            setGeneratedBill({ id: billId, bill_name: billName, total_amount: parseFloat(totalAmount), paybill, participants: validPhones.map(p => ({ name: p.name, phone: normalizePhoneNumber(p.number), amount: Number(p.amount), status: 'pending' })) }); 
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error("Authentication required.");
+
+            const billId = 'bill-' + Date.now();
+            
+            const { error: billError } = await supabase.from('bills').insert({ 
+                id: billId, bill_name: billName, total_amount: parseFloat(totalAmount), paybill, reference: billId, number_of_people: validPhones.length, user_id: user.id 
+            });
+            if (billError) throw billError;
+
+            const { error: partError } = await supabase.from('participants').insert(
+                validPhones.map(p => ({ bill_id: billId, name: p.name, phone_number: normalizePhoneNumber(p.number), amount: Number(p.amount), status: 'pending' }))
+            );
+            if (partError) throw partError;
+
+            setGeneratedBill({ 
+                id: billId, bill_name: billName, total_amount: parseFloat(totalAmount), paybill, participants: validPhones.map(p => ({ name: p.name, phone: normalizePhoneNumber(p.number), amount: Number(p.amount), status: 'pending' })) 
+            }); 
             setShowConfirmation(true);
-        } catch (err) { console.error(err); } finally { setLoading(false); }
+        } catch (err: any) { 
+            console.error(err);
+            alert(err.message || "An unexpected error occurred.");
+        } finally { setLoading(false); }
     };
 
     useEffect(() => {
@@ -148,14 +189,9 @@ const CreatePaymentPage = () => {
         return (
             <div className="min-h-screen bg-gray-50 p-4 md:p-8">
                 <div className="max-w-3xl mx-auto">
-                    {/* BACK BUTTON */}
-                    <button 
-                        onClick={() => setShowConfirmation(false)} 
-                        className="flex items-center gap-2 text-purple-600 font-bold mb-6 hover:translate-x-1 transition-transform"
-                    >
+                    <button onClick={() => setShowConfirmation(false)} className="flex items-center gap-2 text-purple-600 font-bold mb-6 hover:translate-x-1 transition-transform">
                         <ArrowLeft size={20} /> Back to Participants
                     </button>
-
                     <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-white">
                         <div className="bg-purple-600 p-8 text-white">
                             <h2 className="text-3xl font-black mb-1">{generatedBill.bill_name}</h2>
@@ -171,13 +207,10 @@ const CreatePaymentPage = () => {
                                 </div>
                             </div>
                         </div>
-
                         <div className="p-6 md:p-8 space-y-4">
                             {generatedBill.participants.map((p: any, idx: number) => {
                                 const status = sendingStatus[p.phone] || 'idle';
                                 const isPaid = p.status === 'completed';
-                                const isFailed = status === 'failed';
-
                                 return (
                                     <div key={idx} className="flex items-center justify-between p-5 bg-gray-50 rounded-2xl border-2 border-transparent hover:border-purple-100 transition-all">
                                         <div className="flex items-center gap-4">
@@ -189,22 +222,12 @@ const CreatePaymentPage = () => {
                                                 <p className="text-sm text-gray-500 font-medium">{p.phone}</p>
                                             </div>
                                         </div>
-
                                         <div className="flex items-center gap-4">
                                             <p className="text-lg font-black text-gray-800">KES {p.amount}</p>
-                                            
                                             {isPaid ? (
                                                 <div className="bg-green-100 text-green-700 px-4 py-2 rounded-xl font-black text-xs uppercase tracking-widest">Paid</div>
-                                            ) : isFailed ? (
-                                                <button onClick={() => handleSendIndividualSTK(p)} className="bg-red-600 text-white px-5 py-2 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-red-700 shadow-lg shadow-red-100 transition-all active:scale-95">
-                                                    <RefreshCw size={16} /> Retry
-                                                </button>
                                             ) : (
-                                                <button 
-                                                    onClick={() => handleSendIndividualSTK(p)} 
-                                                    disabled={status === 'sending' || status === 'sent'} 
-                                                    className={`px-5 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-all shadow-lg ${status === 'sent' ? 'bg-blue-50 text-blue-600 shadow-none' : 'bg-purple-600 text-white hover:bg-purple-700 shadow-purple-100'}`}
-                                                >
+                                                <button onClick={() => handleSendIndividualSTK(p)} disabled={status === 'sending' || status === 'sent'} className={`px-5 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-all shadow-lg ${status === 'sent' ? 'bg-blue-50 text-blue-600 shadow-none' : 'bg-purple-600 text-white hover:bg-purple-700 shadow-purple-100'}`}>
                                                     {status === 'sending' ? <RefreshCw size={16} className="animate-spin" /> : status === 'sent' ? <Clock size={16} className="animate-pulse" /> : <Send size={16} />}
                                                     {status === 'sending' ? 'Sending...' : status === 'sent' ? 'Waiting PIN' : 'Send STK'}
                                                 </button>
@@ -214,7 +237,6 @@ const CreatePaymentPage = () => {
                                 );
                             })}
                         </div>
-
                         <div className="p-8 bg-gray-50 border-t flex gap-4">
                             <button onClick={() => router.push(`/dashboard/tracking/${generatedBill.id}`)} className="flex-1 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-black transition-all">Live Tracking</button>
                         </div>
@@ -233,6 +255,7 @@ const CreatePaymentPage = () => {
                 </button>
                 <div className="bg-white rounded-[2.5rem] shadow-xl p-8 md:p-12 border border-white">
                     <h2 className="text-4xl font-black text-gray-900 mb-8 tracking-tight">Create Payment</h2>
+                    
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
                         <div className="space-y-6">
                             <div>
@@ -251,19 +274,33 @@ const CreatePaymentPage = () => {
                     </div>
 
                     <div className="space-y-4 mb-10">
-                        <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2"><Users size={16} /> Participant List</label>
+                        <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-4">
+                            <label className="text-xs font-black text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                                <Users size={16} /> Participant List
+                            </label>
+                            
+                            <div className="flex items-center gap-4">
+                                <div className={`text-sm font-bold px-3 py-1 rounded-lg ${Math.abs(phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0) - parseFloat(totalAmount || '0')) < 0.01 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                                    Sum: KES {phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0).toFixed(2)} / {totalAmount || 0}
+                                </div>
+                                <button type="button" onClick={splitEqually} className="text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-xl transition-all shadow-md active:scale-95">
+                                    Split Equally
+                                </button>
+                            </div>
+                        </div>
+
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             {phoneNumbers.map((person) => (
                                 <div key={person.id} className="p-6 bg-gray-50 rounded-[1.5rem] border-2 border-transparent hover:border-gray-200 transition-all space-y-3">
-                                    <input type="text" value={person.name} onChange={(e) => setPhoneNumbers(phoneNumbers.map(p => p.id === person.id ? {...p, name: e.target.value} : p))} placeholder="Name" className="w-full bg-transparent border-b-2 border-gray-200 py-1 outline-none focus:border-purple-500 font-bold text-gray-800" />
-                                    <input type="tel" value={person.number} onChange={(e) => setPhoneNumbers(phoneNumbers.map(p => p.id === person.id ? {...p, number: e.target.value} : p))} placeholder="Phone" className="w-full bg-transparent border-b-2 border-gray-200 py-1 outline-none focus:border-purple-500 font-medium text-gray-600" />
-                                    <input type="number" value={person.amount} onChange={(e) => setPhoneNumbers(phoneNumbers.map(p => p.id === person.id ? {...p, amount: e.target.value} : p))} placeholder="Amount" className="w-full bg-transparent py-1 outline-none font-black text-purple-600 text-xl" />
+                                    <input required type="text" value={person.name} onChange={(e) => setPhoneNumbers(phoneNumbers.map(p => p.id === person.id ? {...p, name: e.target.value} : p))} placeholder="Name" className="w-full bg-transparent border-b-2 border-gray-200 py-1 outline-none focus:border-purple-500 font-bold text-gray-800" />
+                                    <input required type="tel" value={person.number} onChange={(e) => setPhoneNumbers(phoneNumbers.map(p => p.id === person.id ? {...p, number: e.target.value} : p))} placeholder="Phone" className="w-full bg-transparent border-b-2 border-gray-200 py-1 outline-none focus:border-purple-500 font-medium text-gray-600" />
+                                    <input required type="number" value={person.amount} onChange={(e) => setPhoneNumbers(phoneNumbers.map(p => p.id === person.id ? {...p, amount: e.target.value} : p))} placeholder="Amount" className="w-full bg-transparent py-1 outline-none font-black text-purple-600 text-xl" />
                                 </div>
                             ))}
                         </div>
                     </div>
 
-                    <button onClick={handleCreatePayment} className="w-full py-6 bg-purple-600 text-white rounded-[1.5rem] font-black text-xl shadow-xl hover:bg-purple-700 transform hover:-translate-y-1 transition-all active:scale-95 shadow-purple-100">
+                    <button onClick={handleCreatePayment} className="w-full py-6 bg-purple-600 text-white rounded-[1.5rem] font-black text-xl shadow-xl hover:bg-purple-700 transition-all active:scale-95">
                         {loading ? <RefreshCw className="animate-spin mx-auto" /> : "GENERATE PAYMENT"}
                     </button>
                 </div>
@@ -273,4 +310,3 @@ const CreatePaymentPage = () => {
 };
 
 export default CreatePaymentPage;
-
