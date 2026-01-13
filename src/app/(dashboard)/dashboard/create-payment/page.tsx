@@ -140,45 +140,82 @@ const CreatePaymentPage = () => {
     };
 
     const handleCreatePayment = async () => {
-        const validPhones = phoneNumbers.filter(p => p.number && p.name && p.amount);
-        if (validPhones.length === 0 || !billName || !totalAmount || !paybill) {
-            alert("Please fill in all bill details.");
-            return;
+    // 1. Basic Header Validation
+    if (!billName.trim() || !totalAmount || !paybill) {
+        alert("Please fill in the Bill Name, Total Amount, and Paybill.");
+        return;
+    }
+
+    // 2. Check for empty fields in the participant list
+    const hasEmptyFields = phoneNumbers.some(p => !p.name.trim() || !p.number.trim() || !p.amount);
+    if (hasEmptyFields) {
+        alert("Please ensure every participant has a name, phone number, and amount assigned.");
+        return;
+    }
+
+    // 3. Specific Sum Validation (This handles your 1+1 vs 5 scenario)
+    const calculatedSum = phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0);
+    const expectedTotal = parseFloat(totalAmount);
+    
+    if (Math.abs(calculatedSum - expectedTotal) > 0.01) {
+        const difference = expectedTotal - calculatedSum;
+        if (difference > 0) {
+            alert(`The total is incomplete. You have assigned KES ${calculatedSum}, but need to assign KES ${difference} more to reach the total of KES ${expectedTotal}.`);
+        } else {
+            alert(`The total is too high. You have assigned KES ${calculatedSum}, which is KES ${Math.abs(difference)} over the bill total of KES ${expectedTotal}.`);
         }
+        return;
+    }
 
-        const calculatedSum = phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0);
-        if (Math.abs(calculatedSum - parseFloat(totalAmount)) > 0.01) {
-            alert(`Total mismatch: Participants total ${calculatedSum}, but Bill total is ${totalAmount}.`);
-            return;
-        }
+    // 4. If all checks pass, proceed to Database logic
+    setLoading(true);
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error("Authentication required.");
 
-        setLoading(true);
-        try {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (!user) throw new Error("Authentication required.");
+        const billId = 'bill-' + Date.now();
+        const { error: billError } = await supabase.from('bills').insert({
+            id: billId,
+            user_id: user.id,
+            bill_name: billName.trim(),
+            total_amount: expectedTotal,
+            paybill: paybill.trim(),
+            reference: billId,
+            number_of_people: phoneNumbers.length
+        });
+        if (billError) throw billError;
 
-            const billId = 'bill-' + Date.now();
-            
-            const { error: billError } = await supabase.from('bills').insert({ 
-                id: billId, bill_name: billName, total_amount: parseFloat(totalAmount), paybill, reference: billId, number_of_people: validPhones.length, user_id: user.id 
-            });
-            if (billError) throw billError;
+        const { error: partError } = await supabase.from('participants').insert(
+            phoneNumbers.map(p => ({
+                bill_id: billId,
+                name: p.name.trim(),
+                phone_number: normalizePhoneNumber(p.number.trim()),
+                amount: Number(p.amount),
+                status: 'pending'
+            }))
+        );
+        if (partError) throw partError;
 
-            const { error: partError } = await supabase.from('participants').insert(
-                validPhones.map(p => ({ bill_id: billId, name: p.name, phone_number: normalizePhoneNumber(p.number), amount: Number(p.amount), status: 'pending' }))
-            );
-            if (partError) throw partError;
+        setGeneratedBill({
+            id: billId,
+            bill_name: billName.trim(),
+            total_amount: expectedTotal,
+            paybill: paybill.trim(),
+            participants: phoneNumbers.map(p => ({
+                name: p.name,
+                phone: normalizePhoneNumber(p.number),
+                amount: Number(p.amount),
+                status: 'pending'
+            }))
+        }); 
+        setShowConfirmation(true);
 
-            setGeneratedBill({ 
-                id: billId, bill_name: billName, total_amount: parseFloat(totalAmount), paybill, participants: validPhones.map(p => ({ name: p.name, phone: normalizePhoneNumber(p.number), amount: Number(p.amount), status: 'pending' })) 
-            }); 
-            setShowConfirmation(true);
-        } catch (err: any) { 
-            console.error(err);
-            alert(err.message || "An unexpected error occurred.");
-        } finally { setLoading(false); }
-    };
-
+    } catch (err: any) {
+        alert(err.message || "An error occurred while creating the bill.");
+    } finally {
+        setLoading(false);
+    }
+};
     useEffect(() => {
         const count = parseInt(numberOfPeople);
         if (count > 0) setPhoneNumbers(prev => prev.length === count ? prev : (prev.length < count ? [...prev, ...Array.from({length: count - prev.length}).map(() => ({id: Math.random(), number:'', name:'', amount:''}))] : prev.slice(0, count)));
@@ -246,6 +283,12 @@ const CreatePaymentPage = () => {
         );
     }
 
+    const isFormInvalid = 
+    !billName || 
+    !totalAmount || 
+    !paybill || 
+    phoneNumbers.some(p => !p.name || !p.number || !p.amount) ||
+    Math.abs(phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0) - parseFloat(totalAmount || '0')) > 0.01;
     // --- RENDER FORM SCREEN ---
     return (
         <div className="min-h-screen bg-gray-50 p-4 md:p-8">
@@ -299,6 +342,12 @@ const CreatePaymentPage = () => {
                             ))}
                         </div>
                     </div>
+            {totalAmount && Math.abs(phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0) - parseFloat(totalAmount)) > 0.01 && (
+                <div className="mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 text-amber-700 text-sm font-bold rounded-r-xl animate-pulse">
+                    ⚠️ Total assigned (KES {phoneNumbers.reduce((acc, curr) => acc + parseFloat(curr.amount || '0'), 0)}) 
+                    does not match Bill Total (KES {totalAmount}).
+                </div>
+            )}
 
                     <button onClick={handleCreatePayment} className="w-full py-6 bg-purple-600 text-white rounded-[1.5rem] font-black text-xl shadow-xl hover:bg-purple-700 transition-all active:scale-95">
                         {loading ? <RefreshCw className="animate-spin mx-auto" /> : "GENERATE PAYMENT"}
